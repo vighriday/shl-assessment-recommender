@@ -5,7 +5,7 @@ later change cannot silently degrade it. Retrieval is lexical (TF-IDF) with a
 transparent ranker — there is no embedding model to load — so this test has no
 optional dependency and **never skips**: the number is enforced on every run.
 
-The floor (0.75) sits a little below the current measured mean (0.797) to tolerate
+The floor (0.75) sits a little below the current measured mean (0.809) to tolerate
 tokeniser/version noise without inviting regressions. The exact current mean is
 reported by ``python -m scripts.measure_recall``.
 """
@@ -24,7 +24,7 @@ from shl_recommender.retrieval.ranker import LexicalRanker
 # scoreboard measure the exact same thing.
 from scripts.measure_recall import _HINTS, _gold_urls, _user_text
 
-# Current measured mean is ~0.797; guard a floor a little beneath it.
+# Current measured mean is ~0.809; guard a floor a little beneath it.
 _MEAN_FLOOR = 0.75
 
 
