@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shl-recommender"
+version = "0.1.0"
+description = "Conversational recommender for the SHL Individual Test Solutions catalog."
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+include = ["shl_recommender*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
