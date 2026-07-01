@@ -37,17 +37,67 @@ _EXAMPLES = [
 def _to_messages(history: list, message: str) -> list[Message]:
     """Turn Gradio's chat history plus the new turn into engine Message objects.
 
-    Gradio passes history as a list of ``{"role", "content"}`` dicts (messages
-    format). We map those onto our schema and append the new user message.
+    This must be **format-tolerant**. Depending on the Gradio version and the
+    ``ChatInterface`` configuration, ``history`` arrives in one of two shapes:
+
+    * the *messages* format — a list of ``{"role": ..., "content": ...}`` dicts;
+    * the older *tuples* format — a list of ``[user_text, assistant_text]`` pairs.
+
+    Getting this wrong is not cosmetic: if the history shape is not recognised, every
+    prior turn is silently dropped, the engine sees only the current message, the
+    clarification counter reads zero, and the agent asks the same question forever (the
+    clarify loop). So we handle both shapes explicitly and skip only genuinely empty
+    entries. The new user ``message`` is always appended last.
     """
     messages: list[Message] = []
-    for turn in history:
-        role = turn.get("role")
-        content = turn.get("content")
-        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
-            messages.append(Message(role=role, content=content))
+    for turn in history or []:
+        if isinstance(turn, dict):
+            # Messages format: {"role", "content"}. In current Gradio the browser sends
+            # ``content`` as a *list of parts* — ``[{"text": ..., "type": "text"}]`` —
+            # not a plain string (the API client sends a plain string). We must handle
+            # both, or every prior turn is dropped and the agent loops.
+            role = turn.get("role")
+            text = _extract_text(turn.get("content"))
+            if role in ("user", "assistant") and text:
+                messages.append(Message(role=role, content=text))
+        elif isinstance(turn, (list, tuple)) and len(turn) == 2:
+            # Legacy tuples format: [user_text, assistant_text]; either side may be None.
+            user_text, assistant_text = turn
+            if isinstance(user_text, str) and user_text.strip():
+                messages.append(Message(role="user", content=user_text))
+            if isinstance(assistant_text, str) and assistant_text.strip():
+                messages.append(Message(role="assistant", content=assistant_text))
     messages.append(Message(role="user", content=message))
     return messages
+
+
+def _extract_text(content: object) -> str:
+    """Pull plain text out of a Gradio message ``content``, whatever its shape.
+
+    Handles the three forms seen in the wild:
+
+    * a plain string (what the API client / older Gradio send);
+    * a list of content parts — ``[{"text": ..., "type": "text"}, ...]`` — which is
+      what the current Gradio browser client sends;
+    * a single part dict — ``{"text": ...}``.
+
+    Anything else (an image part, ``None``) contributes no text. Returns a stripped
+    string, empty if there is nothing usable.
+    """
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, dict):
+        text = content.get("text")
+        return text.strip() if isinstance(text, str) else ""
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+        return " ".join(parts).strip()
+    return ""
 
 
 def _format(response) -> str:
