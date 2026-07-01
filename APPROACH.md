@@ -112,11 +112,15 @@ rate-limited, without letting a real timeout blow the thirty-second budget. The 
 model is `gemini-2.5-flash`, and the service is deployed as a Hugging Face Docker Space
 with the key held as a secret. Dependencies are pinned for a reproducible build.
 
-I used AI assistance throughout, to move faster under my own direction rather than as a
-replacement for understanding the work. Gemini and Groq are the runtime models the service
-calls. In development I used an AI coding assistant in the editor to scaffold boilerplate,
-draft tests, and explore refactors, and the usual Python tooling (pytest, Hypothesis,
-ruff) to verify everything. Every design decision, the retrieval tuning, the choice to
-drop the embedding layer, and each bug fix was mine to reason through, and the code is
-organised and documented so I can explain it end to end without the tools that helped
-write it.
+I used an AI coding assistant extensively, for end-to-end implementation rather than just
+scaffolding: it wrote much of the FastAPI service, the retrieval and ranking code, the
+conversation policy, the test suite, and the documentation, working under my direction,
+review, and iteration. What was mine throughout was the thinking. I drove the design (the
+"code owns the contract, model owns the language" split, and the decision to keep
+retrieval lexical after measuring that embeddings added no Recall@10), tuned the retrieval
+against the measured number, and diagnosed and directed each bug fix, including the
+prompt-injection gap and the chat-history bug that my own testing surfaced. I verified
+everything with pytest, Hypothesis, and ruff. Gemini and Groq are the runtime models the
+service itself calls. The code is organised and documented so I can explain any part of it
+end to end, which is the point: the assistant did the typing, the decisions and their
+justification are mine.
