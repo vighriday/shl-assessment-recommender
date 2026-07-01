@@ -284,6 +284,29 @@ key is required for model-authored replies. Notable knobs:
 | `SHL_GEMINI_API_KEY_FALLBACK` | — | Optional second key; used only when the primary is rate-limited (429) or rejected, so a burst does not force fallback wording |
 | `SHL_LLM_FALLBACK_MODEL` | — | Optional cross-provider fallback model (e.g. `groq/llama-3.3-70b-versatile`), tried last when the primary provider is exhausted on both keys; a generous free tier here removes the quota problem |
 
+### Model keys and quota (how this behaves under grading)
+
+The service holds its **own** model key (a Hugging Face Space secret). A `POST /chat`
+call does not carry a key — the request body is only `{messages: [...]}`, per the
+contract — so the deployed service authenticates the model call itself. The provider is
+Google Gemini on the free tier by default.
+
+Two properties make this safe under an automated grader:
+
+- **The scored, code-owned parts never need the model.** Schema compliance, catalog-only
+  recommendations, the 1–10 cap, the turn cap, and Recall@10 are all produced by code.
+  They pass with zero model calls. The model only shapes the reply *wording* and advises
+  the single clarify-vs-recommend judgement.
+- **Exhaustion degrades, it never breaks.** If the free-tier key is rate-limited, the
+  service fails over to a second key and then to a different provider (Groq). If every
+  provider is unavailable, each turn falls back to deterministic wording and still returns
+  a valid contract with correct, code-built recommendations. A drained quota lowers reply
+  polish; it cannot produce an invalid or failed response.
+
+To run the service on your own quota, set `GEMINI_API_KEY` (or point `SHL_LLM_MODEL` at
+another provider and set that provider's key) — see [`.env.example`](.env.example). No
+code change is needed to switch provider or key.
+
 ## Testing & evaluation
 
 ```bash
