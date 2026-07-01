@@ -1,97 +1,110 @@
-# Approach — Conversational SHL Assessment Recommender
+# Approach
 
-A stateless FastAPI service (`GET /health`, `POST /chat`) that takes a hiring manager
-from a vague intent to a grounded shortlist of SHL Individual Test Solutions through
-dialogue — clarifying, recommending, refining, comparing, and refusing out-of-scope
-asks.
+A stateless FastAPI service that takes a hiring manager from a vague intent to a
+grounded shortlist of SHL Individual Test Solutions through conversation. It exposes
+`GET /health` and `POST /chat`, and handles the four required behaviours: it clarifies a
+request that is too broad to act on, recommends between one and ten assessments once it
+has enough context, refines the shortlist when constraints change, and compares named
+products using catalog facts rather than the model's memory. It declines general hiring
+advice, legal questions, and prompt injection, and every URL it returns is copied from
+the catalog.
 
-## Design: model for language, code for control
+## The core idea: the model handles language, the code owns the contract
 
-The one principle behind every choice: **the language model interprets and phrases;
-code owns everything the grader checks.** Exactly one decision is model-advised — the
-clarify-vs-recommend readiness judgement; all five modes (clarify / recommend / refine /
-compare / refuse) are chosen by a deterministic **precedence ladder** in code (safety
-first → explicit intent → commit once there's enough context → user owns closure). The
-recommendation list is built entirely in code — 1–10 items or `null`, every `name`,
-`url`, and `test_type` copied verbatim from the catalog, never generated — so a
-hallucinating model can make a reply slightly worse but can never produce an invalid or
-unsafe response. Every model call has a deterministic fallback, so an LLM outage
-degrades wording, not correctness. The service is stateless: each turn rebuilds its
-working state from the full history, with latest-correction-wins.
+The design rests on one decision. The language model is good at reading a messy,
+half-formed request and phrasing a natural reply, so it does that and nothing more.
+Everything the grader checks is decided by code: the response schema, the recommendation
+list, every name and URL and `test_type`, the clarifying-question budget, and the turn
+cap. Only a single judgement is delegated to the model, whether the request is specific
+enough to recommend or needs one more question, and even that is advisory; the five
+conversational modes are chosen by a deterministic precedence ladder that puts safety
+first, honours the user's explicit intent over inference, commits once there is enough
+context, and lets the user close the conversation.
 
-## Retrieval: transparent lexical, measured not assumed
+The payoff is that a model mistake can only make a reply slightly less fluent. It cannot
+produce an invalid response, invent a product, exceed the ten-item cap, or break the turn
+budget, because none of those are the model's to decide. Every path that calls the model
+also has a deterministic fallback, so if the model is slow or unavailable the wording
+degrades but the turn still returns a valid, correct answer. The service is stateless,
+rebuilding its view of the conversation from the full history each turn, so nothing is
+stored between requests and the latest correction always wins.
 
-Retrieval is **lexical TF-IDF** (word n-grams for language + character n-grams for
-product codes like `OPQ32r`, `.NET`) feeding a **transparent weighted-sum ranker** over
-named, inspectable signals: lexical score, category-intent match, language, job-level, an
-exact-name boost, a distinctive-skill-in-name bonus, and injected "staple" defaults
-(OPQ32r, Verify G+ — the measures a consultant adds by default, present in most gold
-shortlists but rarely named by the user). Every recommendation is explainable.
+## Retrieval
 
-**Mean Recall@10 = 0.809** on the ten sample traces, reproduced by
-`scripts/measure_recall.py` and locked by a CI floor test. The number was earned, step
-by step, each change kept only because it moved the metric and only via a *general*
-mechanism (never trace-specific tuning, since the holdout is scored too):
-`0.505 → 0.612` (staple defaults) `→ 0.677` (additive staple weight) `→ 0.717`
-(proportional name scoring) `→ 0.737` (query enrichment with extracted skills) `→ 0.757`
-(family-diversity cap) `→ 0.797` (raise name-boost) `→ 0.809` (distinctive-skill bonus).
+Retrieval is lexical. Two TF-IDF representations run over each catalog item, one on word
+n-grams for ordinary language and one on character n-grams so product codes like `OPQ32r`
+and `.NET` still match. Those feed a ranker that is a plain weighted sum of named signals:
+text similarity, whether the item's category matches one the user asked for, language and
+job-level fit, a boost when a query word is a large fraction of an item's own name, a
+small bonus when a distinctive required skill such as `AWS` appears in the name, and an
+additive floor for the two staple assessments a competent consultant reaches for by
+default. Because every term is a number I can read, any recommendation can be explained.
+
+Mean Recall@10 on the ten sample conversations is 0.809. A script measures it and a test
+locks it against regression. I originally built a hybrid that added sentence embeddings on
+top of the lexical layer, then measured what the embeddings contributed and found it was
+zero: on every trace the hybrid scored the same as lexical alone, because the one gold
+item the embeddings uniquely recovered was cancelled by a different one they pushed out.
+The embedding model was also failing to load on a clean install because of an
+under-pinned dependency, so the hybrid was often not even running. I removed it. Carrying
+a heavy, hard-to-reproduce component that moves no measured number is the kind of choice
+the brief warns against, and the lexical system is smaller, reproducible, and no worse on
+the evidence.
 
 ## Prompt design
 
-Two model calls per turn, both narrow. **Understanding** extracts a flat JSON of
-role/seniority/skills/categories/languages plus a readiness judgement, with explicit
-"leave it null if unstated — do not invent" instructions (including: do not infer
-purpose; a bare job title is *not* ready; don't re-ask what's answered; stop asking when
-the user pushes back). **Reply** writes only the framing prose per mode, told *not* to
-enumerate products or URLs (the authoritative list travels in a separate, code-built
-field), and grounded in real catalog facts on a comparison turn. Deterministic signals
-(injection, off-topic, confirmation, add/drop, comparison) are detected in code, so
-those turns work with the model down.
+There are two model calls per turn, both tightly scoped. The understanding call extracts
+a small JSON object of role, seniority, skills, requested categories and languages, plus
+the readiness judgement, and is told to leave a field empty when the user did not state
+it rather than guess. It is also told that a bare job title is not enough to recommend on,
+not to re-ask something already answered, and to stop asking once the user pushes back.
+The reply call writes only the short framing sentence for the turn; it is told not to list
+products or URLs, because the real list is built by code, and on a comparison turn it is
+handed the compared products' actual catalog attributes so the comparison is grounded
+rather than recalled. Clear signals like injection, off-topic asks, confirmations and
+edits are detected in code, so those turns behave correctly even with the model down.
 
-## Evaluation: test the logic exhaustively, measure the judgement
+## Evaluation, and what did not work
 
-The brief warns that submissions fail on weak evaluation and happy-path-only code, so
-testing is layered: **~393 deterministic tests** — unit, HTTP-contract, Hypothesis
-property tests (`/chat` never 5xx on arbitrary input), a 10-trace replay, behaviour
-probes, and a **54-case edge battery** (every mode, whitespace, huge JDs, unicode, role
-casing, refuse-asymmetry, hallucination). The one fuzzy decision is tested by
-**metamorphic laws** (properties true for *any* input — e.g. adding information can never
-reduce readiness) and an **independent LLM-as-judge** reporting an agreement rate. This
-adversarial testing found real bugs the happy path hid.
+The brief is explicit that submissions fail on weak evaluation, so testing is where I
+invested most. The suite has around four hundred deterministic tests: unit tests per
+module, HTTP tests that pin the exact contract, property tests that assert `/chat` never
+returns a server error on arbitrary input, a replay of all ten sample conversations,
+behaviour probes for the named edge cases, and a large edge-case battery covering every
+mode plus whitespace, very long job descriptions, unicode, and odd role casing. These use
+a controllable stand-in for the model, so they test the logic exhaustively and run on
+every commit. The one genuinely fuzzy decision, clarify versus recommend, cannot be tested
+against a fixed answer without overfitting or flakiness, so I test it two other ways:
+metamorphic laws that assert properties holding for any input (adding information can
+never make a request less ready, for instance), and an independent model call that judges
+whether each decision was reasonable and reports an agreement rate.
 
-## What didn't work, and how I measured it
+Several things did not work, and I kept only what I could measure. The embedding layer
+added nothing and was removed. Raising the category weight measured about ten points
+worse, because a flat category flag pulls in broad, unfocused tests, so I kept it low. A
+grid search over the weights found no regression-free gain beyond the tuned point. My own
+adversarial testing found real bugs the happy path hid, including a prompt-injection check
+that missed the most common phrasing of the attack, and I fixed each and locked it with a
+test. Eight gold items are still missed at 0.809; I diagnosed each as either an item the
+user dropped, a genuine vocabulary gap, or a case buried in a dense cluster of similar
+products, none closable without tuning to the visible traces at the cost of the held-out
+set.
 
-- **Sentence embeddings added nothing.** I built a full hybrid (lexical + `all-MiniLM`
-  embeddings) and measured its contribution: **0.000** net Recall@10 across all ten
-  traces — its one unique recovery was cancelled by an equal displacement. It was also
-  silently failing to import on a fresh install (an under-pinned transitive dependency).
-  I **removed it** — a component that moves no measured number and can't be reproduced is
-  not worth carrying. Result: identical recall, a smaller and reproducible build.
-- **Raising the category weight hurt** (−0.098): a flat category flag promotes broad
-  multi-category noise over focused skill tests. An 864-config weight grid found no
-  regression-free improvement beyond the tuned point.
-- **A clarify loop** (found by hand): a vague opener the user kept restating drew the
-  same question forever. Fixed by tightening the readiness prompt; the metamorphic
-  monotonicity law now guards it.
-- **The injection detector missed the canonical jailbreak** — "ignore all previous
-  instructions" (a plural-noun regex gap) fell through to the model. Found by the edge
-  battery; fixed and locked with tests. Eight gold items remain un-recalled at 0.809,
-  each diagnosed (one the user dropped; the rest true vocabulary gaps or crowded
-  same-category clusters) and not closable without overfitting the visible traces.
+## Stack and use of AI tools
 
-## Stack and AI-tool use
+The service uses FastAPI and Pydantic for a typed, self-validating contract, and
+scikit-learn for TF-IDF, which keeps it free of any heavy machine-learning runtime. Model
+access goes through LiteLLM so the provider is a configuration choice, with a failover
+chain from the primary Gemini model to a second key and then to Groq if a provider is
+rate-limited, without letting a real timeout blow the thirty-second budget. The default
+model is `gemini-2.5-flash`, and the service is deployed as a Hugging Face Docker Space
+with the key held as a secret. Dependencies are pinned for a reproducible build.
 
-**FastAPI + Pydantic** (typed contract, automatic validation), **scikit-learn** TF-IDF
-(no heavy ML dependency), **LiteLLM** as a provider-agnostic model layer with a
-three-provider failover chain (Gemini → second Gemini key → Groq; only rate-limit/auth
-errors advance it, so the 30 s budget holds). Default model `gemini-2.5-flash`; deployed
-as a **Hugging Face Docker Space**. Everything is pinned for reproducible builds.
-
-AI assistance was used throughout, as an accelerator under my direction, not a
-substitute for understanding: **Google Gemini and Groq** as the runtime LLMs;
-**AI coding assistants** (agentic pair-programming in the editor) for scaffolding
-boilerplate, drafting tests, and exploratory refactors; and standard Python tooling
-(**pytest**, **Hypothesis**, **ruff**) for verification. Every design decision, the
-retrieval tuning, the semantic-removal call, and the bug fixes were mine to reason
-through and defend — the code is structured and documented so it can be explained end to
-end without the tools that helped write it.
+I used AI assistance throughout, to move faster under my own direction rather than as a
+replacement for understanding the work. Gemini and Groq are the runtime models the service
+calls. In development I used an AI coding assistant in the editor to scaffold boilerplate,
+draft tests, and explore refactors, and the usual Python tooling (pytest, Hypothesis,
+ruff) to verify everything. Every design decision, the retrieval tuning, the choice to
+drop the embedding layer, and each bug fix was mine to reason through, and the code is
+organised and documented so I can explain it end to end without the tools that helped
+write it.

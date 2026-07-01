@@ -14,6 +14,7 @@ venv/
 # Local tooling state
 .veris/
 .model_cache/
+.playwright-mcp/
 
 # Internal (non-public) documentation — interview prep, deep architecture notes, the
 # debugging journal, the verification report. Kept local; not published to the repo.
