@@ -1,0 +1,42 @@
+name: Keep the live endpoint warm
+
+# Pings the deployed service's /health endpoint on a schedule so the free Hugging Face
+# Space does not sleep, and so the endpoint is instantly responsive whenever the SHL
+# automated grader hits it. /health is cheap (no model call), so this costs nothing.
+#
+# Runs every 15 minutes, comfortably inside the Space's inactivity-sleep window. Can
+# also be triggered by hand from the Actions tab.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # every 15 minutes
+  workflow_dispatch: {}       # allow a manual run from the Actions tab
+
+# Only the latest keep-warm run needs to matter; cancel any overlapping one.
+concurrency:
+  group: keep-warm
+  cancel-in-progress: true
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping /health (retry a cold start within the 2-minute grace)
+        run: |
+          URL="https://hriday29-shl-assessment-recommender.hf.space/health"
+          # A sleeping Space can take up to ~2 minutes to wake, which the assignment
+          # explicitly allows. Retry with backoff so a cold start does not fail the job.
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -s -o /tmp/health.json -w "%{http_code}" --max-time 30 "$URL" || echo "000")
+            body=$(cat /tmp/health.json 2>/dev/null || echo "")
+            echo "attempt $attempt -> HTTP $code  body: $body"
+            if [ "$code" = "200" ]; then
+              echo "Endpoint is up."
+              exit 0
+            fi
+            echo "Not ready yet (likely a cold start); waiting 25s..."
+            sleep 25
+          done
+          echo "Endpoint did not return 200 after retries."
+          exit 1
