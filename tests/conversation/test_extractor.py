@@ -140,6 +140,37 @@ def test_prior_questions_are_counted():
     assert state.clarifications_asked == 2
 
 
+def test_questions_without_a_trailing_qmark_still_count():
+    # Robustness: a clarifying turn phrased WITHOUT a trailing "?" must still count
+    # against the budget, or the cap can fail to fire and the agent loops. This is the
+    # regression for the clarify-loop that a trailing-"?" heuristic let slip through.
+    llm = FakeLLM()
+    history = _msgs(
+        ("user", "I need an assessment."),
+        ("assistant", "Tell me the role you're hiring for."),   # no "?"
+        ("user", "senior Java developer"),
+        ("assistant", "And the specific skills to focus on."),  # no "?"
+        ("user", "the core"),
+    )
+    state = reconstruct_state(history, llm)
+    assert state.clarifications_asked == 2  # both non-shortlist turns counted
+
+
+def test_a_committed_shortlist_turn_is_not_counted_as_a_question():
+    # A turn that offered a shortlist is a commit, not a clarification, so it must not
+    # consume clarify budget (otherwise a refine could be starved).
+    llm = FakeLLM({"role": "developer"})
+    history = _msgs(
+        ("user", "I need an assessment."),
+        ("assistant", "What role?"),
+        ("user", "developer"),
+        ("assistant", "Here: https://www.shl.com/products/product-catalog/view/opq32r/"),
+        ("user", "yes"),
+    )
+    state = reconstruct_state(history, llm)
+    assert state.clarifications_asked == 1  # only the "What role?" turn, not the shortlist
+
+
 def test_refinement_add_signal_is_captured():
     llm = FakeLLM({"role": "graduate analyst"})
     history = _msgs(

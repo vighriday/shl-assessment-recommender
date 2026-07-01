@@ -183,6 +183,45 @@ def test_curly_quote_confirmation_is_recognised(catalog):
     assert resp.recommendations is not None
 
 
+# --- The clarify budget HARD-caps: the agent can never loop asking questions --------
+
+
+def test_agent_commits_by_the_budget_and_never_loops(catalog):
+    # The exact multi-turn "grind" that exposed a loop: a vague opener the user answers
+    # with short replies. Whatever the model advises, the agent MUST commit a shortlist
+    # once the clarify budget is spent — it can never keep asking. Modelled here with a
+    # model that ALWAYS says "not ready" (the worst case for looping); the code cap must
+    # still force a commit.
+    engine = _engine(catalog, json={"ready_to_recommend": False, "clarifying_question": "Tell me more."})
+    convo = []
+    committed_turn = None
+    for i, user_msg in enumerate(["I need an assessment.", "senior Java developer", "the core", "Java", "core"], start=1):
+        convo.append(("user", user_msg))
+        resp = engine.respond(_turn(*convo))
+        convo.append(("assistant", resp.reply))
+        if resp.recommendations is not None:
+            committed_turn = i
+            break
+    # It must have committed within the first few turns, not looped through all five.
+    assert committed_turn is not None, "agent never committed — it looped asking questions"
+    assert committed_turn <= 3, f"agent took {committed_turn} turns to commit; budget cap failed"
+
+
+def test_questions_phrased_without_a_qmark_still_hit_the_cap(catalog):
+    # Same guarantee even when the model phrases its questions without a trailing "?" —
+    # the budget must still cap (this is what a trailing-"?" count got wrong).
+    engine = _engine(catalog, json={"ready_to_recommend": False, "clarifying_question": "Tell me the role"})
+    convo = [
+        ("user", "I need an assessment."),
+        ("assistant", "Tell me the role"),           # no "?"
+        ("user", "senior Java developer"),
+        ("assistant", "And the skills to focus on"),  # no "?"
+        ("user", "the core"),
+    ]
+    resp = engine.respond(_turn(*convo))
+    assert resp.recommendations is not None  # budget spent -> must commit, not ask again
+
+
 # --- Hallucination (the PDF names "% of turns with hallucinations" as a probe) ---
 #
 # The system's anti-hallucination guarantee is structural: the recommendation list is

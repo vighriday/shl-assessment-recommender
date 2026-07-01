@@ -67,17 +67,27 @@ def _latest_user_text(messages: list) -> str:
 
 
 def _count_prior_agent_questions(messages: list) -> int:
-    """How many questions the agent has already asked.
+    """How many clarifying turns the agent has already spent.
 
-    Used by the policy engine to keep clarification within budget. A trailing
-    question mark on an assistant turn is a good-enough proxy and avoids needing
-    stored state.
+    Used by the policy engine to keep clarification within budget and — critically —
+    to *guarantee* the agent stops asking and commits. We must never **under**-count,
+    or the budget cap fails to fire and the agent can loop asking questions forever.
+
+    So the rule is deliberately robust rather than clever: **any assistant turn that
+    did not offer a shortlist is counted as a clarifying turn.** A committing turn is
+    recognised by the shortlist it contains (a catalog URL/table), which is a strong,
+    format-tolerant signal; everything else the agent said back — a question, however
+    phrased, with or without a trailing "?" — counts against the budget. This can only
+    ever *over*-count (e.g. it would count a refusal), which is safe: over-counting
+    makes the agent commit *sooner*, never loop. A trailing-"?" heuristic, by contrast,
+    silently under-counts whenever a question is rephrased without a "?" or a turn is
+    dropped from the history, which is exactly how a loop slips through.
     """
     return sum(
         1
         for message in messages
         if getattr(message, "role", None) == "assistant"
-        and getattr(message, "content", "").strip().endswith("?")
+        and not _looks_like_shortlist(getattr(message, "content", ""))
     )
 
 
