@@ -64,20 +64,32 @@ handed the compared products' actual catalog attributes so the comparison is gro
 rather than recalled. Clear signals like injection, off-topic asks, confirmations and
 edits are detected in code, so those turns behave correctly even with the model down.
 
-## Evaluation, and what did not work
+## Evaluation
 
 The brief is explicit that submissions fail on weak evaluation, so testing is where I
-invested most. The suite has around four hundred deterministic tests: unit tests per
-module, HTTP tests that pin the exact contract, property tests that assert `/chat` never
-returns a server error on arbitrary input, a replay of all ten sample conversations,
-behaviour probes for the named edge cases, and a large edge-case battery covering every
-mode plus whitespace, very long job descriptions, unicode, and odd role casing. These use
-a controllable stand-in for the model, so they test the logic exhaustively and run on
-every commit. The one genuinely fuzzy decision, clarify versus recommend, cannot be tested
-against a fixed answer without overfitting or flakiness, so I test it two other ways:
-metamorphic laws that assert properties holding for any input (adding information can
-never make a request less ready, for instance), and an independent model call that judges
-whether each decision was reasonable and reports an agreement rate.
+invested most, and I measure four things directly.
+
+**Retrieval quality** is Mean Recall@10 against the ten sample conversations, currently
+0.809. A script computes it and a test locks a floor so a change cannot quietly regress
+it. **Recommendation relevance** is measured the same way but end to end: all ten traces
+are replayed through the full engine and the committed shortlist is scored against each
+trace's labelled gold set, and a separate test confirms every gold URL actually exists in
+the catalog so the ceiling is real. **Groundedness** is enforced structurally and then
+tested: the recommendation list is built entirely by code from the catalog, so the model
+cannot introduce a product or URL, and a probe drives a deliberately mischievous model
+that tries to smuggle a fabricated link into its reply and asserts it never reaches the
+recommendations; comparison turns are handed the compared products' real catalog
+attributes so the answer is drawn from catalog evidence rather than the model's prior.
+**Overall response accuracy and effectiveness** is covered by around four hundred
+deterministic tests (unit, HTTP-contract, a Hypothesis property test that `/chat` never
+returns a server error on arbitrary input, behaviour probes for the named edge cases, and
+a large edge-case battery over every mode plus whitespace, very long job descriptions,
+unicode, and role casing), plus two methods for the one genuinely fuzzy decision, clarify
+versus recommend: metamorphic laws that assert properties holding for any input (adding
+information can never make a request less ready, for instance), and an independent model
+call that judges whether each decision was reasonable and reports an agreement rate.
+
+## What did not work
 
 Several things did not work, and I kept only what I could measure. The embedding layer
 added nothing and was removed. Raising the category weight measured about ten points
